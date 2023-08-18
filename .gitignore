@@ -22,3 +22,5 @@ objfiles.txt
 /ereport.txt
 
 /build/script/version.cfg
+build
+dest
