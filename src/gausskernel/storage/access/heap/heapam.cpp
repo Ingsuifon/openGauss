@@ -1428,7 +1428,9 @@ Datum fastgetattr_with_dict(HeapTuple tup, int attnum, TupleDesc tupleDesc, bool
 Relation relation_open(Oid relationId, LOCKMODE lockmode, int2 bucketId)
 {
     Relation r;
-
+    if (relationId == 16384) {
+        printf("Hello!");
+    }
     Assert(lockmode >= NoLock && lockmode < MAX_LOCKMODES);
     Assert(bucketId < SegmentBktId);
     if (IsAbortedTransactionBlockState()) {
