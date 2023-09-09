@@ -4266,7 +4266,7 @@ uint64 CopyFrom(CopyState cstate)
         cstate->volatile_defexprs) {
         useHeapMultiInsert = false;
     } else {
-        useHeapMultiInsert = true;
+        useHeapMultiInsert = false;
         mgr = initCopyFromManager(cstate->copycontext, resultRelationDesc);
         cstate->pcState = New(cstate->copycontext) PageCompress(resultRelationDesc, cstate->copycontext);
     }
