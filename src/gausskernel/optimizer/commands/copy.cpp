@@ -4261,15 +4261,15 @@ uint64 CopyFrom(CopyState cstate)
      * inserting to, and act differently if the tuples that have already been
      * processed and prepared for insertion are not there.
      */
-    if ((resultRelInfo->ri_TrigDesc != NULL &&
-        (resultRelInfo->ri_TrigDesc->trig_insert_before_row || resultRelInfo->ri_TrigDesc->trig_insert_instead_row)) ||
-        cstate->volatile_defexprs) {
-        useHeapMultiInsert = false;
-    } else {
-        useHeapMultiInsert = false;
-        mgr = initCopyFromManager(cstate->copycontext, resultRelationDesc);
-        cstate->pcState = New(cstate->copycontext) PageCompress(resultRelationDesc, cstate->copycontext);
-    }
+    // if ((resultRelInfo->ri_TrigDesc != NULL &&
+    //     (resultRelInfo->ri_TrigDesc->trig_insert_before_row || resultRelInfo->ri_TrigDesc->trig_insert_instead_row)) ||
+    //     cstate->volatile_defexprs) {
+    //     useHeapMultiInsert = false;
+    // } else {
+    //     useHeapMultiInsert = true;
+    //     mgr = initCopyFromManager(cstate->copycontext, resultRelationDesc);
+    //     cstate->pcState = New(cstate->copycontext) PageCompress(resultRelationDesc, cstate->copycontext);
+    // }
 
     /* Prepare to catch AFTER triggers. */
     AfterTriggerBeginQuery();
