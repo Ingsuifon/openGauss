@@ -13,6 +13,7 @@
  *
  * -------------------------------------------------------------------------
  */
+#include <unordered_map>
 #include "postgres.h"
 #include "knl/knl_variable.h"
 
@@ -21,6 +22,7 @@
 #include "access/transam.h"
 #include "access/visibilitymap.h"
 #include "access/ustore/knl_upage.h"
+#include "access/odess.h"
 #include "commands/tablespace.h"
 #include "storage/buf/bufmgr.h"
 #include "storage/buf/bufpage.h"
@@ -30,6 +32,7 @@
 #include "utils/snapmgr.h"
 #include "utils/rel.h"
 
+Odess odess;
 /*
  * RelationPutHeapTuple - place tuple at specified page
  *
