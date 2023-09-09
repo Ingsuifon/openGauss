@@ -370,7 +370,7 @@ static void heap_tuple_len_verifier(Size len)
  *	ereport(ERROR) is allowed here, so this routine *must* be called
  *	before any (unlogged) changes are made in buffer pool.
  */
-Buffer RelationGetBufferForTuple(Relation relation, Size len, Buffer other_buffer, int options, BulkInsertState bistate,
+Buffer RelationGetBufferForTuple(Relation relation, HeapTuple tuple, Buffer other_buffer, int options, BulkInsertState bistate,
                                  Buffer *vmbuffer, Buffer *vmbuffer_other, BlockNumber end_rel_block)
 {
     bool use_fsm = !(options & HEAP_INSERT_SKIP_FSM);
@@ -382,6 +382,7 @@ Buffer RelationGetBufferForTuple(Relation relation, Size len, Buffer other_buffe
     bool need_lock = false;
     Size extralen = 0;
     HeapPageHeader phdr;
+    Size len = tuple->t_len;
 
     /*
      * Blocks that extended one by one are different from bulk-extend blocks, and

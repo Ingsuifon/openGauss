@@ -2967,7 +2967,7 @@ Oid heap_insert(Relation relation, HeapTuple tup, CommandId cid, int options, Bu
      * this will also pin the requisite visibility map page.
      */
     buffer = RelationGetBufferForTuple(
-        relation, heaptup->t_len, InvalidBuffer, options, bistate, &vmbuffer, NULL, rel_end_block);
+        relation, heaptup, InvalidBuffer, options, bistate, &vmbuffer, NULL, rel_end_block);
 
     (void)heap_page_prepare_for_xid(relation, buffer, xid, false);
     HeapTupleCopyBaseFromPage(heaptup, BufferGetPage(buffer));
@@ -4075,7 +4075,7 @@ int heap_multi_insert(Relation relation, Relation parent, HeapTuple* tuples, int
                  * all-visible, this will also pin the requisite visibility map page.
                  */
                 buffer = RelationGetBufferForTuple(relation,
-                    heap_tuples[ndone]->t_len,
+                    heap_tuples[ndone],
                     InvalidBuffer,
                     options,
                     bistate,
@@ -5568,7 +5568,7 @@ l2:
         if (new_tup_size > pagefree || rel_in_redis) {
             /* Assume there's no chance to put heaptup on same page. */
             newbuf = RelationGetBufferForTuple(
-                relation, heaptup->t_len, buffer, options, NULL, &vmbuffer_new, &vmbuffer, rel_end_block);
+                relation, heaptup, buffer, options, NULL, &vmbuffer_new, &vmbuffer, rel_end_block);
         } else {
             /* Re-acquire the lock on the old tuple's page. */
             LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
@@ -5582,7 +5582,7 @@ l2:
                  */
                 LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
                 newbuf = RelationGetBufferForTuple(
-                    relation, heaptup->t_len, buffer, options, NULL, &vmbuffer_new, &vmbuffer, rel_end_block);
+                    relation, heaptup, buffer, options, NULL, &vmbuffer_new, &vmbuffer, rel_end_block);
             } else {
                 /* OK, it fits here, so we're done. */
                 newbuf = buffer;
