@@ -758,12 +758,13 @@ loop:
  * this function is similar to RelationGetBufferForTuple, the main difference is as following:
  * For concurrent bulkload all buffers got from this function is new and exclusive.
  */
-Buffer RelationGetNewBufferForBulkInsert(Relation relation, Size len, Size dict_size, BulkInsertState bistate)
+Buffer RelationGetNewBufferForBulkInsert(Relation relation, HeapTuple tuple, Size dict_size, BulkInsertState bistate)
 {
     Buffer buffer;
     Page page;
     bool need_lock = false;
     HeapPageHeader phdr;
+    Size len = tuple->t_len;
 
     need_lock = !RELATION_IS_LOCAL(relation);
     if (need_lock) {

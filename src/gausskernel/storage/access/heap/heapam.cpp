@@ -4062,13 +4062,13 @@ int heap_multi_insert(Relation relation, Relation parent, HeapTuple* tuples, int
 #endif
 
         if (is_compressed) {
-            buffer = RelationGetNewBufferForBulkInsert(relation, heap_tuples[ndone]->t_len, cmpr_size, bistate);
+            buffer = RelationGetNewBufferForBulkInsert(relation, heap_tuples[ndone], cmpr_size, bistate);
             page = BufferGetPage(buffer);
             PageReinitWithDict(page, cmpr_size);
         } else {
             if (tmpPageReplication) {
                 /* Get new page and exclusive */
-                buffer = RelationGetNewBufferForBulkInsert(relation, heap_tuples[ndone]->t_len, cmpr_size, bistate);
+                buffer = RelationGetNewBufferForBulkInsert(relation, heap_tuples[ndone], cmpr_size, bistate);
             } else {
                 /*
                  * Find buffer where at least the next tuple will fit.	If the page is
