@@ -1074,7 +1074,7 @@ TupleDesc BuildDescForRelation(List *schema, Node *orientedFrom, char relkind, O
         VerifyAttrCompressMode(entry->cmprs_mode, thisatt->attlen, attname);
         thisatt->attcmprmode = entry->cmprs_mode;
 
-        BlockRowCompressRelOption(tableFormat, entry);
+        // BlockRowCompressRelOption(tableFormat, entry);
     }
 
     if (has_not_null) {
