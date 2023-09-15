@@ -1633,10 +1633,10 @@ void RowTblCheckCompressionOption(List *options, int8 rowCompress)
             if (def->arg) {
                 const char *valstr = defGetString(def);
 
-                if (pg_strcasecmp(valstr, "no") != 0) {
-                    ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                                    errmsg("row-oriented table does not support compression")));
-                }
+                // if (pg_strcasecmp(valstr, "no") != 0) {
+                //     ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                //                     errmsg("row-oriented table does not support compression")));
+                // }
             }
             break;
         }
