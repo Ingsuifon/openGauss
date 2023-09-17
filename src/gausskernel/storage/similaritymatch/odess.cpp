@@ -1,6 +1,7 @@
+#include "access/odess.h"
+
 #include <random>
 
-#include "access/odess.h"
 #include "xxhash.h"
 
 Odess::Odess() {
@@ -21,9 +22,9 @@ Odess::Odess() {
   }
 }
 
-void Odess::Calculation(uint8_t* buffer, uint64_t length,
-                        SimilarityFeatures* features) {
+SimilarityFeatures Odess::Calculation(uint8_t* buffer, uint64_t length) {
   uint64_t hashValue = 0;
+  SimilarityFeatures features;
   for (uint64_t i = 0; i < length; i++) {
     hashValue = (hashValue << 1) + gearMatrix[buffer[i]];
     for (int j = 0; j < 12; j++) {
@@ -32,10 +33,12 @@ void Odess::Calculation(uint8_t* buffer, uint64_t length,
     }
   }
 
-  features->feature1 = XXH64(&maxList[0 * 4], sizeof(uint64_t) * 4, 0x7fcaf1);
-  features->feature2 = XXH64(&maxList[1 * 4], sizeof(uint64_t) * 4, 0x7fcaf1);
-  features->feature3 = XXH64(&maxList[2 * 4], sizeof(uint64_t) * 4, 0x7fcaf1);
+  features.feature1 = XXH64(&maxList[0 * 4], sizeof(uint64_t) * 4, 0x7fcaf1);
+  features.feature2 = XXH64(&maxList[1 * 4], sizeof(uint64_t) * 4, 0x7fcaf1);
+  features.feature3 = XXH64(&maxList[2 * 4], sizeof(uint64_t) * 4, 0x7fcaf1);
   std::fill(maxList.begin(), maxList.end(), 0);
+
+  return features;
 }
 
 std::array<uint64_t, 256> Odess::gearMatrix{

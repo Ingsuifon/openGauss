@@ -5352,6 +5352,9 @@ void CopyFromInsertBatch(Relation rel, EState* estate, CommandId mycid, int hi_o
     HeapMultiInsertExtraArgs args = {NULL, 0, false};
     (void)tableam_tuple_multi_insert(rel, resultRelInfo->ri_RelationDesc,
         (Tuple*)bufferedTuples, nBufferedTuples, mycid, hi_options, bistate, &args);
+    // for (int i = 0; i < nBufferedTuples; i++) {
+    //     tableam_tuple_insert(rel, bufferedTuples[i], mycid, hi_options, bistate);
+    // }
     MemoryContextSwitchTo(oldcontext);
 
     /*

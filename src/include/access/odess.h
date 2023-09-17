@@ -10,7 +10,7 @@ class Odess {
  public:
   Odess();
   ~Odess() = default;
-  void Calculation(uint8_t*, uint64_t, SimilarityFeatures*);
+  SimilarityFeatures Calculation(uint8_t*, uint64_t);
 
  private:
   std::array<int, 12> kArray;

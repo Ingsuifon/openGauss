@@ -13,7 +13,8 @@
  *
  * -------------------------------------------------------------------------
  */
-#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 #include "postgres.h"
 #include "knl/knl_variable.h"
 
@@ -32,7 +33,11 @@
 #include "utils/snapmgr.h"
 #include "utils/rel.h"
 
+Buffer RelationGetBufferForTuple_Test(Relation, HeapTuple, Buffer, int, BulkInsertState,
+                                 Buffer*, Buffer*, BlockNumber);
 Odess odess;
+std::vector<std::unordered_set<uint64_t>> featureSet;
+int cnt = 0;
 /*
  * RelationPutHeapTuple - place tuple at specified page
  *
@@ -373,6 +378,10 @@ static void heap_tuple_len_verifier(Size len)
 Buffer RelationGetBufferForTuple(Relation relation, HeapTuple tuple, Buffer other_buffer, int options, BulkInsertState bistate,
                                  Buffer *vmbuffer, Buffer *vmbuffer_other, BlockNumber end_rel_block)
 {
+    if (!strcmp(RelationGetRelationName(relation), "zup")) {
+        return RelationGetBufferForTuple_Test(relation, tuple, other_buffer, options, bistate, vmbuffer, vmbuffer_other,
+                                       end_rel_block);
+    }
     bool use_fsm = !(options & HEAP_INSERT_SKIP_FSM);
     Buffer buffer = InvalidBuffer;
     Page page;
@@ -752,6 +761,131 @@ loop:
     return buffer;
 }
 
+Buffer RelationGetBufferForTuple_Test(Relation relation, HeapTuple tuple, Buffer other_buffer, int options, BulkInsertState bistate,
+                                 Buffer *vmbuffer, Buffer *vmbuffer_other, BlockNumber end_rel_block)
+{
+    cnt++;
+    bool use_fsm = !(options & HEAP_INSERT_SKIP_FSM);
+    Buffer buffer = InvalidBuffer;
+    Page page;
+    Size page_free_space = 0;
+    Size save_free_space = 0;
+    BlockNumber target_block = InvalidBlockNumber, other_block;
+    bool need_lock = false;
+    Size extralen = 0;
+    HeapPageHeader phdr;
+    Size len = tuple->t_len;
+
+    len = MAXALIGN(len); /* be conservative */
+
+    /* Bulk insert is not supported for updates, only inserts. */
+    Assert(other_buffer == InvalidBuffer || !bistate);
+
+    /*
+     * If we're gonna fail for oversize tuple, do it right away
+     */
+    heap_tuple_len_verifier(len);
+
+    /* Compute desired extra freespace due to fillfactor option */
+    save_free_space = RelationGetTargetPageFreeSpace(relation, HEAP_DEFAULT_FILLFACTOR);
+
+    if (other_buffer != InvalidBuffer) {
+        other_block = BufferGetBlockNumber(other_buffer);
+    } else {
+        other_block = InvalidBlockNumber; /* just to keep compiler quiet */
+    }
+
+    if ((bistate != NULL) && BufferIsValid(bistate->current_buf)) {
+        RelFileNode rnode;
+        ForkNumber forknum;
+        BlockNumber blknum;
+
+        BufferGetTag(bistate->current_buf, &rnode, &forknum, &blknum);
+
+        if (!RelFileNodeEquals(relation->rd_node, rnode)) {
+            ReleaseBuffer(bistate->current_buf);
+            bistate->current_buf = InvalidBuffer;
+        }
+    }
+
+    SimilarityFeatures f = odess.Calculation(reinterpret_cast<uint8_t*>(tuple->t_data), tuple->t_len);
+    for (BlockNumber blk = 0; blk < RelationGetNumberOfBlocks(relation); blk++) {
+        std::unordered_set<uint64_t>& fSet = featureSet[blk];
+        if (fSet.count(f.feature1) || fSet.count(f.feature2) || fSet.count(f.feature3)) {
+            buffer = ReadBuffer(relation, blk);
+            LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+            page = BufferGetPage(buffer);
+            page_free_space = PageGetHeapFreeSpace(page);
+            if (len + save_free_space <= page_free_space) {
+                /* use this page as future insert target, too */
+                target_block = blk;
+                RelationSetTargetBlock(relation, target_block);
+                if (fSet.size() < 30) {
+                    fSet.insert(f.feature1);
+                    fSet.insert(f.feature2);
+                    fSet.insert(f.feature3);
+                }
+                return buffer;
+            }
+
+            LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+            ReleaseBuffer(buffer);
+        }
+    }
+
+    if (RelationGetNumberOfBlocks(relation) >= 340) {
+        for (BlockNumber blk = 0; blk < RelationGetNumberOfBlocks(relation); blk++) {
+            buffer = ReadBuffer(relation, blk);
+            LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+            page = BufferGetPage(buffer);
+            page_free_space = PageGetHeapFreeSpace(page);
+            if (len + save_free_space <= page_free_space) {
+                /* use this page as future insert target, too */
+                target_block = blk;
+                RelationSetTargetBlock(relation, target_block);
+                std::unordered_set<uint64_t>& fSet = featureSet[blk];
+                if (fSet.size() < 30) {
+                    fSet.insert(f.feature1);
+                    fSet.insert(f.feature2);
+                    fSet.insert(f.feature3);
+                }
+                return buffer;
+            }
+
+            LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+            ReleaseBuffer(buffer);
+        }
+    }
+
+    buffer = ReadBufferBI(relation, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+    page = BufferGetPage(buffer);
+    if (!PageIsNew(page)) {
+        int elevel = ENABLE_DMS ? PANIC : ERROR;
+        ereport(elevel,
+            (errcode(ERRCODE_DATA_CORRUPTED), errmsg("page %u of relation \"%s\" should be empty but is not",
+            BufferGetBlockNumber(buffer), RelationGetRelationName(relation))));
+    }
+
+    phdr = (HeapPageHeader)page;
+    PageInit(page, BufferGetPageSize(buffer), 0, true);
+    phdr->pd_xid_base = u_sess->utils_cxt.RecentXmin - FirstNormalTransactionId;
+    phdr->pd_multi_base = 0;
+
+    MarkBufferDirty(buffer);
+
+    Size free_space = PageGetHeapFreeSpace(page);
+    if (len > free_space) {
+        /* We should not get here given the test at the top */
+        ereport(PANIC, (errmsg("tuple is too big: size %lu", (unsigned long)len)));
+    }
+    RelationSetTargetBlock(relation, BufferGetBlockNumber(buffer));
+    featureSet.emplace_back(std::unordered_set<uint64_t>());
+    featureSet.back().insert(f.feature1);
+    featureSet.back().insert(f.feature2);
+    featureSet.back().insert(f.feature3);
+
+    return buffer;
+}
 /*
  * RelationGetNewBufferForBulkInsert
  *
