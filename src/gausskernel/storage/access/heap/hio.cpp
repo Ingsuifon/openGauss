@@ -378,7 +378,7 @@ static void heap_tuple_len_verifier(Size len)
 Buffer RelationGetBufferForTuple(Relation relation, HeapTuple tuple, Buffer other_buffer, int options, BulkInsertState bistate,
                                  Buffer *vmbuffer, Buffer *vmbuffer_other, BlockNumber end_rel_block)
 {
-    if (!strcmp(RelationGetRelationName(relation), "zup")) {
+    if (!strcmp(RelationGetRelationName(relation), "aa")) {
         return RelationGetBufferForTuple_Test(relation, tuple, other_buffer, options, bistate, vmbuffer, vmbuffer_other,
                                        end_rel_block);
     }

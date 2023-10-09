@@ -13,6 +13,9 @@
 #include "storage/smgr/smgr.h"
 #include "pgstat.h"
 #include "postmaster/cfs_shrinker.h"
+#include <fstream>
+#include <mutex>
+#include <unordered_map>
 
 #define CFS_PCA_AND_ASSIST_BUFFER_SIZE (2 * CFS_EXTENT_SIZE * BLCKSZ)
 #define CFS_WRITE_RETRY_TIMES 8
@@ -105,7 +108,13 @@ int CfsReadPage(SMgrRelation reln, ForkNumber forknum, BlockNumber logicBlockNum
     return BLCKSZ;
 }
 
-char *CfsCompressPage(const char *buffer, RelFileCompressOption *option, uint8 *nchunks)
+std::ofstream fout;
+size_t Cmpr_size = 0;
+size_t Cnt = 0;
+std::mutex mtx;
+std::unordered_map<BlockNumber, size_t> Cmpr_size_map;
+
+char *CfsCompressPage(const char *buffer, RelFileCompressOption *option, uint8 *nchunks, RelFileNode *rfn = nullptr, BlockNumber blocknum = 0)
 {
     uint8 algorithm = option->compressAlgorithm;
     uint32 chunk_size = CHUNK_SIZE_LIST[option->compressChunkSize];
@@ -121,6 +130,20 @@ char *CfsCompressPage(const char *buffer, RelFileCompressOption *option, uint8 *
 
     char *work_buffer = (char *) palloc((unsigned long)work_buffer_size);
     auto compress_buffer_size = CompressPage(buffer, work_buffer, work_buffer_size, *option);
+    
+    if (rfn != nullptr && rfn->relNode == 237595) {
+        mtx.lock();
+        if (!Cmpr_size_map.count(blocknum))
+            Cnt++;
+        Cmpr_size -= Cmpr_size_map[blocknum];
+        Cmpr_size_map[blocknum] = compress_buffer_size;
+        Cmpr_size += compress_buffer_size;
+        fout.open("/home/cyf/dataLoad/compress.txt", std::ios::trunc);
+        fout << Cnt << " " << Cmpr_size << std::endl;
+        fout.close();
+        mtx.unlock();
+    }
+    
     if (compress_buffer_size < 0) {
         /* if error occurs, we don't compress, just store original page. */
         compress_buffer_size = BLCKSZ;
@@ -289,7 +312,7 @@ size_t CfsWritePage(SMgrRelation reln, ForkNumber forknum, BlockNumber logicBloc
 
     /* compress page */
     uint8 nchunks;
-    char *compressedBuffer = CfsCompressPage(buffer, &option, &nchunks);
+    char *compressedBuffer = CfsCompressPage(buffer, &option, &nchunks, &reln->smgr_rnode.node, logicBlockNumber);
 
     /* set address */
     uint8 need_chunks = option.compressPreallocChunks > nchunks ? (uint8)option.compressPreallocChunks : (uint8)nchunks;
