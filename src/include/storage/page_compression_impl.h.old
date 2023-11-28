@@ -30,8 +30,6 @@
 #include "storage/page_compression.h"
 #include "storage/checksum_impl.h"
 #include "utils/pg_lzcompress.h"
-#include "lizard_compress.h"
-#include "lizard_decompress.h"
 
 #include "access/ustore/knl_upage.h"
 
@@ -69,12 +67,6 @@ typedef struct UHeapPageCompressData {
 
 THR_LOCAL char aux_abuf[BLCKSZ];
 THR_LOCAL char src_copy[BLCKSZ];
-
-template <uint8 pagetype>
-int TemplateDecompressPage2(const char* src, char* dst);
-
-template <uint8 pagetype>
-int TemplateCompressPage2(const char* src, char* dst, int dst_size, RelFileCompressOption option);
 
 /**
  * return data of page
@@ -1255,29 +1247,11 @@ int CompressPage(const char* src, char* dst, int dst_size, RelFileCompressOption
     uint8 pagetype = PageGetPageLayoutVersion(src);
     switch (pagetype) {
         case PG_UHEAP_PAGE_LAYOUT_VERSION:
-            return TemplateCompressPage2<PG_UHEAP_PAGE_LAYOUT_VERSION>(src, dst, dst_size, option);
+            return TemplateCompressPage<PG_UHEAP_PAGE_LAYOUT_VERSION>(src, dst, dst_size, option);
         case PG_HEAP_PAGE_LAYOUT_VERSION:
-            return TemplateCompressPage2<PG_HEAP_PAGE_LAYOUT_VERSION>(src, dst, dst_size, option);
+            return TemplateCompressPage<PG_HEAP_PAGE_LAYOUT_VERSION>(src, dst, dst_size, option);
         case PG_COMM_PAGE_LAYOUT_VERSION:
-            return TemplateCompressPage2<PG_COMM_PAGE_LAYOUT_VERSION>(src, dst, dst_size, option);
-        default :
-            break;
-    }
-
-    // no need to compress
-    return BLCKSZ;
-}
-
-int CompressPage2(const char* src, char* dst, int dst_size, RelFileCompressOption option)
-{
-    uint8 pagetype = PageGetPageLayoutVersion(src);
-    switch (pagetype) {
-        case PG_UHEAP_PAGE_LAYOUT_VERSION:
-            return TemplateCompressPage2<PG_UHEAP_PAGE_LAYOUT_VERSION>(src, dst, dst_size, option);
-        case PG_HEAP_PAGE_LAYOUT_VERSION:
-            return TemplateCompressPage2<PG_HEAP_PAGE_LAYOUT_VERSION>(src, dst, dst_size, option);
-        case PG_COMM_PAGE_LAYOUT_VERSION:
-            return TemplateCompressPage2<PG_COMM_PAGE_LAYOUT_VERSION>(src, dst, dst_size, option);
+            return TemplateCompressPage<PG_COMM_PAGE_LAYOUT_VERSION>(src, dst, dst_size, option);
         default :
             break;
     }
@@ -1291,11 +1265,11 @@ int DecompressPage(const char* src, char* dst)
     uint8 pagetype = PageGetPageLayoutVersion(src);
     switch (pagetype) {
         case PG_UHEAP_PAGE_LAYOUT_VERSION:
-            return TemplateDecompressPage2<PG_UHEAP_PAGE_LAYOUT_VERSION>(src, dst);
+            return TemplateDecompressPage<PG_UHEAP_PAGE_LAYOUT_VERSION>(src, dst);
         case PG_HEAP_PAGE_LAYOUT_VERSION:
-            return TemplateDecompressPage2<PG_HEAP_PAGE_LAYOUT_VERSION>(src, dst);
+            return TemplateDecompressPage<PG_HEAP_PAGE_LAYOUT_VERSION>(src, dst);
         case PG_COMM_PAGE_LAYOUT_VERSION:
-            return TemplateDecompressPage2<PG_COMM_PAGE_LAYOUT_VERSION>(src, dst);
+            return TemplateDecompressPage<PG_COMM_PAGE_LAYOUT_VERSION>(src, dst);
         default :
             break;
     }
@@ -2248,193 +2222,6 @@ int TemplateDecompressPage(const char* src, char* dst)
                 return -1;
             }
 #endif
-            break;
-        default:
-            return COMPRESS_UNSUPPORTED_ERROR;
-            break;
-    }
-
-    if (byte_convert) {
-        DecompressPageDeconvert(dst, diff_convert, pagetype);
-    }
-
-    return headerSize + decompressed_size;
-}
-
-#include <lz4.h>
-
-template <uint8 pagetype>
-int TemplateCompressPage2(const char* src, char* dst, int dst_size, RelFileCompressOption option)
-{
-    int compressed_size;
-    int8 level = option.compressLevelSymbol ? option.compressLevel : -option.compressLevel;
-    size_t sizeOfHeaderData = GetSizeOfHeadData(pagetype);
-
-    bool real_ByteConvert = false;
-    errno_t rc;
-    option.byteConvert = false;
-
-    if (option.byteConvert) {
-        rc = memcpy_s(src_copy, BLCKSZ, src, BLCKSZ);
-        securec_check(rc, "", "");
-        CompressPagePrepareConvert(src_copy, option.diffConvert, &real_ByteConvert, pagetype); /* preprocess convert src */
-    }
-
-    char* data = GetPageCompressedData(dst, pagetype);
-    HeapPageHeader page = (HeapPageHeader)src;
-    switch (option.compressAlgorithm) {
-        case COMPRESS_ALGORITHM_PGLZ: {
-            bool success = true;
-            Lizard_stream_t* streamPtr = Lizard_createStream(10);
-            const char* source = src + page->pd_upper;
-            int batchSize = (page->pd_lower - sizeOfHeaderData)/sizeof(ItemIdData);
-            int midZoneOffset = sizeOfHeaderData;
-            int midZoneLength = page->pd_lower - midZoneOffset + 2;
-            uint16_t ptrLength = midZoneLength - 2;
-            char* ddst = data + midZoneLength;
-            int* srcSize = (int*)malloc(sizeof(int)*batchSize);
-            int* dstSize = (int*)malloc(sizeof(int)*batchSize);
-            int maxDstSize = dst_size;
-            int compressedSize = 0;
-            int* headerLen = (int*)malloc(sizeof(int)*batchSize);
-
-            for(int i = 0; i < batchSize; i++){
-                srcSize[i] = page->pd_linp[batchSize - 1 - i].lp_len;
-                headerLen[i] = 0;
-            }
-
-            int o1 = page->pd_linp[batchSize - 1].lp_off;
-            int o2 = page->pd_linp[batchSize].lp_off;
-            int l1 = page->pd_linp[batchSize - 1].lp_len;
-            int l2 = page->pd_linp[batchSize].lp_len;
-            int o3 = page->pd_linp[0].lp_off;
-            int l3 = page->pd_linp[0].lp_len;
-
-            memcpy_s(data, 2, &ptrLength, 2);
-            memcpy_s(data+2, ptrLength, src + midZoneOffset, ptrLength);
-            
-            int ret = Lizard_compress_continue(streamPtr, source, 
-            ddst, srcSize, dstSize, maxDstSize, batchSize, compressedSize, headerLen);
-
-            if(ret < 0) success = false;
-
-            compressed_size = midZoneLength + ret;
-            compressed_size = compressed_size < BLCKSZ ? compressed_size : BLCKSZ;
-            break;
-        }
-        case COMPRESS_ALGORITHM_ZSTD: {
-            if (level == 0 || level < MIN_ZSTD_COMPRESSION_LEVEL || level > MAX_ZSTD_COMPRESSION_LEVEL) {
-                level = DEFAULT_ZSTD_COMPRESSION_LEVEL;
-            }
-            if (real_ByteConvert) {
-                compressed_size =
-                    LZ4_compress_default(src_copy + sizeOfHeaderData, data, BLCKSZ - sizeOfHeaderData, dst_size);
-            } else {
-                compressed_size =
-                    LZ4_compress_default(src_copy + sizeOfHeaderData, data, BLCKSZ - sizeOfHeaderData, dst_size);
-            }
-
-            if (compressed_size<0) {
-                return -1;
-            }
-            break;
-        }
-        default:
-            return COMPRESS_UNSUPPORTED_ERROR;
-    }
-
-    if ((compressed_size < 0) || ((GetSizeOfCprsHeadData(pagetype) + compressed_size) >= BLCKSZ)) {
-        return -1;
-    }
-
-    if (pagetype == PG_UHEAP_PAGE_LAYOUT_VERSION) {
-        UHeapPageCompressData* pcdptr = ((UHeapPageCompressData*)dst);
-        rc = memcpy_s(pcdptr->page_header, sizeOfHeaderData, src, sizeOfHeaderData);
-        securec_check(rc, "", "");
-        pcdptr->size = compressed_size;
-        pcdptr->crc32 = DataBlockChecksum(data, compressed_size, true);
-        pcdptr->byte_convert = real_ByteConvert;
-        pcdptr->diff_convert = option.diffConvert;
-        pcdptr->algorithm = option.compressAlgorithm;
-    } else if (pagetype == PG_HEAP_PAGE_LAYOUT_VERSION) {
-        HeapPageCompressData* pcdptr = ((HeapPageCompressData*)dst);
-        rc = memcpy_s(pcdptr->page_header, sizeOfHeaderData, src, sizeOfHeaderData);
-        securec_check(rc, "", "");
-        pcdptr->size = compressed_size;
-        pcdptr->crc32 = DataBlockChecksum(data, compressed_size, true);
-        pcdptr->byte_convert = real_ByteConvert;
-        pcdptr->diff_convert = option.diffConvert;
-        pcdptr->algorithm = option.compressAlgorithm;
-    } else {
-        PageCompressData* pcdptr = ((PageCompressData*)dst);
-        rc = memcpy_s(pcdptr->page_header, sizeOfHeaderData, src, sizeOfHeaderData);
-        securec_check(rc, "", "");
-        pcdptr->size = compressed_size;
-        pcdptr->crc32 = DataBlockChecksum(data, compressed_size, true);
-        pcdptr->byte_convert = real_ByteConvert;
-        pcdptr->diff_convert = option.diffConvert;
-        pcdptr->algorithm = option.compressAlgorithm;
-    }
-
-    return GetSizeOfCprsHeadData(pagetype) + compressed_size;
-}
-
-template <uint8 pagetype>
-int TemplateDecompressPage2(const char* src, char* dst)
-{
-    int decompressed_size;
-    char* data;
-    uint32 size;
-    uint32 crc32;
-    int algorithm;
-    bool byte_convert, diff_convert;
-    size_t headerSize = GetSizeOfHeadData(pagetype);
-    int rc = memcpy_s(dst, headerSize, src, headerSize);
-    securec_check(rc, "", "");
-
-    if (pagetype == PG_UHEAP_PAGE_LAYOUT_VERSION) {
-        data = ((UHeapPageCompressData*)src)->data;
-        size = ((UHeapPageCompressData*)src)->size;
-        crc32 = ((UHeapPageCompressData*)src)->crc32;
-        byte_convert = ((UHeapPageCompressData*)src)->byte_convert;
-        diff_convert = ((UHeapPageCompressData*)src)->diff_convert;
-        algorithm = ((UHeapPageCompressData*)src)->algorithm;
-    } else if (pagetype == PG_HEAP_PAGE_LAYOUT_VERSION) {
-        data = ((HeapPageCompressData*)src)->data;
-        size = ((HeapPageCompressData*)src)->size;
-        crc32 = ((HeapPageCompressData*)src)->crc32;
-        byte_convert = ((HeapPageCompressData*)src)->byte_convert;
-        diff_convert = ((HeapPageCompressData*)src)->diff_convert;
-        algorithm = ((HeapPageCompressData*)src)->algorithm;
-    } else {
-        data = ((PageCompressData*)src)->data;
-        size = ((PageCompressData*)src)->size;
-        crc32 = ((PageCompressData*)src)->crc32;
-        byte_convert = ((PageCompressData*)src)->byte_convert;
-        diff_convert = ((PageCompressData*)src)->diff_convert;
-        algorithm = ((PageCompressData*)src)->algorithm;
-    }
-
-    if (DataBlockChecksum(data, size, true) != crc32) {
-        return -2;
-    }
-
-    uint16_t ptrLength;
-    int midZoneLength = 2 + ptrLength;
-    switch (algorithm) {
-        case COMPRESS_ALGORITHM_PGLZ:
-            memcpy_s(&ptrLength, 2, data, 2);
-            memcpy_s(dst+headerSize, ptrLength, data+2, ptrLength);
-            decompressed_size = Lizard_decompress_safe(data+midZoneLength, dst+headerSize+ptrLength, size - midZoneLength, BLCKSZ - headerSize - midZoneLength);
-            if(decompressed_size < 0){
-                return -1;
-            }
-            break;
-        case COMPRESS_ALGORITHM_ZSTD:
-            decompressed_size = LZ4_decompress_safe(data, dst + headerSize, size, BLCKSZ - headerSize);
-            if (decompressed_size<0) {
-                return -1;
-            }
             break;
         default:
             return COMPRESS_UNSUPPORTED_ERROR;

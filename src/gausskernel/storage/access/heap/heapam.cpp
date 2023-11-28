@@ -40,12 +40,17 @@
  *
  * -------------------------------------------------------------------------
  */
+#include <algorithm>
+#include <vector>
+#include <random>
+
 #include "postgres.h"
 #include "knl/knl_variable.h"
 #include "access/csnlog.h"
 #include "access/heapam.h"
 #include "access/hio.h"
 #include "access/multixact.h"
+#include "access/odess.h"
 #include "access/relscan.h"
 #include "access/sysattr.h"
 #include "access/tableam.h"
@@ -3946,6 +3951,60 @@ static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup, CommandId
     }
 }
 
+std::vector<std::vector<bool>> correlation_graph(const std::vector<HeapTuple> tuples) {
+    int ntuples = tuples.size();
+    std::vector<std::vector<bool>> graph(ntuples, std::vector<bool>(ntuples, false));
+    Odess odess;
+    for (int i = 0; i < ntuples; ++i) {
+        SimilarityFeatures f1 = odess.Calculation(reinterpret_cast<uint8_t*>(tuples[i]->t_data), tuples[i]->t_len);
+        graph[i][i] = true;
+        for (int j = i + 1; j < ntuples; ++j) {
+            SimilarityFeatures f2 = odess.Calculation(reinterpret_cast<uint8_t*>(tuples[j]->t_data), tuples[j]->t_len);
+            if (f1 == f2)
+                graph[i][j] = graph[j][i] = true;
+        }
+    }
+    return graph;
+}
+
+std::vector<int> correlation_clustering(const std::vector<std::vector<bool>>& graph) {
+    int n = graph.size();
+    std::vector<int> res(n);
+    // 随机生成一个排列π
+    std::vector<int> permutation(n);
+    std::iota(permutation.begin(), permutation.end(), 0);
+    std::shuffle(permutation.begin(), permutation.end(), std::mt19937{std::random_device{}()});
+    // 计算每个顶点的最小秩邻居η
+    std::vector<int> eta(n);
+    for (int v = 0; v < n; ++v) {
+        auto it = std::find_if(permutation.begin(), permutation.end(), [&, v](int u) { return graph[v][u]; });
+        eta[v] = it - permutation.begin();
+    }
+    // 初始化簇
+    std::vector<std::vector<int>> clusters(n);
+    // 为每个顶点分配到一个簇
+    for (int v = 0; v < n; ++v) {
+        if (v == eta[v]) {  // 如果v是枢纽
+            clusters[v].push_back(v);  // v形成一个单点簇
+        } else {
+            // 如果η(v)是枢纽，v加入η(v)的簇；否则，v形成单点簇
+            if (eta[v] == eta[eta[v]]) {
+                clusters[eta[v]].push_back(v);
+            }
+            else {
+                clusters[v].push_back(v);
+            }
+        }
+    }
+    // 生成排列
+    auto begin = res.begin();
+    for (auto& cluster : clusters) {
+        std::copy(cluster.begin(), cluster.end(), begin);
+        begin += cluster.size();
+    }
+    return res;
+}
+
 /*
  *	heap_multi_insert	- insert multiple tuple into a heap
  *
@@ -3961,7 +4020,8 @@ int heap_multi_insert(Relation relation, Relation parent, HeapTuple* tuples, int
     BulkInsertState bistate, HeapMultiInsertExtraArgs* args)
 {
     TransactionId xid = GetCurrentTransactionId();
-    HeapTuple* heap_tuples = NULL;
+    // HeapTuple* heap_tuples = NULL;
+    std::vector<HeapTuple> heap_tuples(ntuples);
     const char* cmprs_data = args->dictData;
     int cmpr_size = args->dictSize;
     int i;
@@ -4007,7 +4067,7 @@ int heap_multi_insert(Relation relation, Relation parent, HeapTuple* tuples, int
     save_free_space = RelationGetTargetPageFreeSpace(relation, HEAP_DEFAULT_FILLFACTOR);
 
     /* Toast and set header data in all the tuples */
-    heap_tuples = (HeapTupleData**)palloc(ntuples * sizeof(HeapTuple));
+    // heap_tuples = (HeapTupleData**)palloc(ntuples * sizeof(HeapTuple));
     for (i = 0; i < ntuples; i++)
         heap_tuples[i] = heap_prepare_insert(relation, tuples[i], cid, options);
 
@@ -4031,6 +4091,16 @@ int heap_multi_insert(Relation relation, Relation parent, HeapTuple* tuples, int
      * buffer before making the call.
      */
     CheckForSerializableConflictIn(relation, NULL, InvalidBuffer);
+
+    if (!strcmp(RelationGetRelationName(relation), "aa")) {
+        auto graph = correlation_graph(heap_tuples);
+        auto clusters = correlation_clustering(graph);
+        std::vector<HeapTuple> tmp(ntuples);
+        for (int i = 0; i < ntuples; ++i) {
+            tmp[i] = heap_tuples[clusters[i]];
+        }
+        heap_tuples = std::move(tmp);
+    }
 
     ndone = 0;
     while (ndone < ntuples) {

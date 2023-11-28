@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 #include <assert.h>
 #include <sys/mman.h>
+#include <vector>
 
 #if defined(_M_AMD64) || defined(_M_X64) || defined(__amd64) || defined(__x86_64__)
 #include <emmintrin.h>
@@ -30,8 +31,8 @@
 #include "storage/page_compression.h"
 #include "storage/checksum_impl.h"
 #include "utils/pg_lzcompress.h"
-#include "lizard_compress.h"
-#include "lizard_decompress.h"
+#include "lizard/lizard_common.h"
+#include "lizard/lizard_decompress.h"
 
 #include "access/ustore/knl_upage.h"
 
@@ -1240,7 +1241,8 @@ int CompressPageBufferBound(const char* page, uint8 algorithm)
 {
     switch (algorithm) {
         case COMPRESS_ALGORITHM_PGLZ:
-            return BLCKSZ * 2;
+            // return BLCKSZ * 2;
+            return Lizard_compressBound(BLCKSZ - GetSizeOfHeadData(PG_HEAP_PAGE_LAYOUT_VERSION));
         case COMPRESS_ALGORITHM_ZSTD:
             return ZSTD_compressBound(BLCKSZ - CompressReservedLen(page));
         case COMPRESS_ALGORITHM_PGZSTD:
@@ -1251,24 +1253,6 @@ int CompressPageBufferBound(const char* page, uint8 algorithm)
 }
 
 int CompressPage(const char* src, char* dst, int dst_size, RelFileCompressOption option)
-{
-    uint8 pagetype = PageGetPageLayoutVersion(src);
-    switch (pagetype) {
-        case PG_UHEAP_PAGE_LAYOUT_VERSION:
-            return TemplateCompressPage2<PG_UHEAP_PAGE_LAYOUT_VERSION>(src, dst, dst_size, option);
-        case PG_HEAP_PAGE_LAYOUT_VERSION:
-            return TemplateCompressPage2<PG_HEAP_PAGE_LAYOUT_VERSION>(src, dst, dst_size, option);
-        case PG_COMM_PAGE_LAYOUT_VERSION:
-            return TemplateCompressPage2<PG_COMM_PAGE_LAYOUT_VERSION>(src, dst, dst_size, option);
-        default :
-            break;
-    }
-
-    // no need to compress
-    return BLCKSZ;
-}
-
-int CompressPage2(const char* src, char* dst, int dst_size, RelFileCompressOption option)
 {
     uint8 pagetype = PageGetPageLayoutVersion(src);
     switch (pagetype) {
@@ -2281,44 +2265,44 @@ int TemplateCompressPage2(const char* src, char* dst, int dst_size, RelFileCompr
     }
 
     char* data = GetPageCompressedData(dst, pagetype);
-    HeapPageHeader page = (HeapPageHeader)src;
+    PageHeaderData *page = (PageHeaderData *)src;
+    bool heapPageData = page->pd_special == BLCKSZ;
     switch (option.compressAlgorithm) {
         case COMPRESS_ALGORITHM_PGLZ: {
-            bool success = true;
-            Lizard_stream_t* streamPtr = Lizard_createStream(10);
-            const char* source = src + page->pd_upper;
-            int batchSize = (page->pd_lower - sizeOfHeaderData)/sizeof(ItemIdData);
-            int midZoneOffset = sizeOfHeaderData;
-            int midZoneLength = page->pd_lower - midZoneOffset + 2;
-            uint16_t ptrLength = midZoneLength - 2;
-            char* ddst = data + midZoneLength;
-            int* srcSize = (int*)malloc(sizeof(int)*batchSize);
-            int* dstSize = (int*)malloc(sizeof(int)*batchSize);
-            int maxDstSize = dst_size;
-            int compressedSize = 0;
-            int* headerLen = (int*)malloc(sizeof(int)*batchSize);
+            bool success;
+            const int batch_size = 10;
+            if (real_ByteConvert) {
+                success = pglz_compress(src_copy + sizeOfHeaderData, BLCKSZ - sizeOfHeaderData, (PGLZ_Header *)data,
+                    heapPageData ? PGLZ_strategy_default : PGLZ_strategy_always);
+                
+                auto stream = Lizard_createStream();
+                HeapPageHeader heap_page = reinterpret_cast<HeapPageHeader>(src_copy);
+                int num_line = PageGetMaxOffsetNumber(src_copy);
+                int num_batch = num_line / batch_size;
 
-            for(int i = 0; i < batchSize; i++){
-                srcSize[i] = page->pd_linp[batchSize - 1 - i].lp_len;
-                headerLen[i] = 0;
+
+                reinterpret_cast<int*>(data)[0] = num_line;
+                std::vector<int> src_lens(num_line);
+                std::vector<int> dst_lens(num_line);
+                std::vector<int> header_lens(num_line);
+                for (int i = 0; i < num_line; ++i) {
+                    src_lens[i] = ItemIdGetLength(PageGetItemId(src_copy, i + 1));
+                    header_lens[i] = reinterpret_cast<HeapTupleHeader>(src_copy + PageGetItemId(src_copy, i + 1)->lp_off)->t_hoff;
+                    reinterpret_cast<int*>(data)[i + 1] = src_lens[i];
+                }
+
+                int size = Lizard_compress_continue(stream, src_copy + heap_page->pd_upper, 
+                                                    data + (num_line + 1) * sizeof(int), BLCKSZ - heap_page->pd_upper, 
+                                                    dst_lens.data(), Lizard_compressBound(BLCKSZ - heap_page->pd_upper), 
+                                                    10, 0, header_lens.data());
+
+
+                Lizard_freeStream(stream);
+            } else {
+                success = pglz_compress(src + sizeOfHeaderData, BLCKSZ - sizeOfHeaderData, (PGLZ_Header *)data,
+                    heapPageData ? PGLZ_strategy_default : PGLZ_strategy_always);
             }
-
-            int o1 = page->pd_linp[batchSize - 1].lp_off;
-            int o2 = page->pd_linp[batchSize].lp_off;
-            int l1 = page->pd_linp[batchSize - 1].lp_len;
-            int l2 = page->pd_linp[batchSize].lp_len;
-            int o3 = page->pd_linp[0].lp_off;
-            int l3 = page->pd_linp[0].lp_len;
-
-            memcpy_s(data, 2, &ptrLength, 2);
-            memcpy_s(data+2, ptrLength, src + midZoneOffset, ptrLength);
-            
-            int ret = Lizard_compress_continue(streamPtr, source, 
-            ddst, srcSize, dstSize, maxDstSize, batchSize, compressedSize, headerLen);
-
-            if(ret < 0) success = false;
-
-            compressed_size = midZoneLength + ret;
+            compressed_size = success ? VARSIZE(data) : BLCKSZ;
             compressed_size = compressed_size < BLCKSZ ? compressed_size : BLCKSZ;
             break;
         }
@@ -2419,14 +2403,10 @@ int TemplateDecompressPage2(const char* src, char* dst)
         return -2;
     }
 
-    uint16_t ptrLength;
-    int midZoneLength = 2 + ptrLength;
     switch (algorithm) {
         case COMPRESS_ALGORITHM_PGLZ:
-            memcpy_s(&ptrLength, 2, data, 2);
-            memcpy_s(dst+headerSize, ptrLength, data+2, ptrLength);
-            decompressed_size = Lizard_decompress_safe(data+midZoneLength, dst+headerSize+ptrLength, size - midZoneLength, BLCKSZ - headerSize - midZoneLength);
-            if(decompressed_size < 0){
+            decompressed_size = pglz_decompress((const PGLZ_Header* )data, dst + headerSize);
+            if (decompressed_size == -1) {
                 return -1;
             }
             break;

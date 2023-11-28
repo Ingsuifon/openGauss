@@ -1,20 +1,25 @@
 #include <array>
 
 struct SimilarityFeatures {
-  uint64_t feature1;
-  uint64_t feature2;
-  uint64_t feature3;
+    uint64_t feature[12];
+
+    bool operator==(const SimilarityFeatures &other) const
+    {
+        for (int i = 0; i < 3; i++) {
+            if (feature[i] == other.feature[i])
+                return true;
+        }
+        return false;
+    }
 };
 
 class Odess {
- public:
-  Odess();
-  ~Odess() = default;
-  SimilarityFeatures Calculation(uint8_t*, uint64_t);
+public:
+    SimilarityFeatures Calculation(uint8_t *, uint64_t, uint64_t headerLength = 0, uint64_t skipLength = 0);
 
- private:
-  std::array<int, 12> kArray;
-  std::array<int, 12> bArray;
-  std::array<uint64_t, 12> maxList;
-  static std::array<uint64_t, 256> gearMatrix;
+private:
+    std::array<uint64_t, 12> maxList;
+    static std::array<int, 12> kArray;
+    static std::array<int, 12> bArray;
+    static std::array<uint64_t, 256> gearMatrix;
 };
