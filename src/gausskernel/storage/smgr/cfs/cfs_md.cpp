@@ -131,7 +131,7 @@ char *CfsCompressPage(const char *buffer, RelFileCompressOption *option, uint8 *
     char *work_buffer = (char *) palloc((unsigned long)work_buffer_size);
     auto compress_buffer_size = CompressPage(buffer, work_buffer, work_buffer_size, *option);
     
-    if (rfn != nullptr && rfn->relNode == 49205) {
+    if (rfn != nullptr && rfn->relNode == 65631) {
         mtx.lock();
         if (!Cmpr_size_map.count(blocknum))
             Cnt++;

@@ -3951,16 +3951,19 @@ static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup, CommandId
     }
 }
 
-std::vector<std::vector<bool>> correlation_graph(const std::vector<HeapTuple> tuples) {
+std::vector<std::vector<bool>> correlation_graph(const std::vector<HeapTuple>& tuples) {
     int ntuples = tuples.size();
     std::vector<std::vector<bool>> graph(ntuples, std::vector<bool>(ntuples, false));
+    std::vector<SimilarityFeatures> features(ntuples);
     Odess odess;
+
+    for (int i = 0; i < ntuples; ++i)
+        features[i] = odess.Calculation(reinterpret_cast<uint8_t*>(tuples[i]->t_data), tuples[i]->t_len, 24);
+
     for (int i = 0; i < ntuples; ++i) {
-        SimilarityFeatures f1 = odess.Calculation(reinterpret_cast<uint8_t*>(tuples[i]->t_data), tuples[i]->t_len);
         graph[i][i] = true;
         for (int j = i + 1; j < ntuples; ++j) {
-            SimilarityFeatures f2 = odess.Calculation(reinterpret_cast<uint8_t*>(tuples[j]->t_data), tuples[j]->t_len);
-            if (f1 == f2)
+            if (features[i] == features[j])
                 graph[i][j] = graph[j][i] = true;
         }
     }
@@ -3978,7 +3981,7 @@ std::vector<int> correlation_clustering(const std::vector<std::vector<bool>>& gr
     std::vector<int> eta(n);
     for (int v = 0; v < n; ++v) {
         auto it = std::find_if(permutation.begin(), permutation.end(), [&, v](int u) { return graph[v][u]; });
-        eta[v] = it - permutation.begin();
+        eta[v] = *it;
     }
     // 初始化簇
     std::vector<std::vector<int>> clusters(n);
@@ -3990,8 +3993,7 @@ std::vector<int> correlation_clustering(const std::vector<std::vector<bool>>& gr
             // 如果η(v)是枢纽，v加入η(v)的簇；否则，v形成单点簇
             if (eta[v] == eta[eta[v]]) {
                 clusters[eta[v]].push_back(v);
-            }
-            else {
+            } else {
                 clusters[v].push_back(v);
             }
         }
